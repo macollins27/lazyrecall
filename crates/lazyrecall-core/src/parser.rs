@@ -12,8 +12,9 @@
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
-use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+
+use crate::error::{Error, Result};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionMetadata {
@@ -50,7 +51,7 @@ pub fn parse_metadata(path: &Path) -> Result<SessionMetadata> {
     let id = path
         .file_stem()
         .and_then(|s| s.to_str())
-        .context("session path has no file stem")?
+        .ok_or_else(|| Error::InvalidSessionPath(path.display().to_string()))?
         .to_string();
 
     let modified = std::fs::metadata(path)?
@@ -79,7 +80,10 @@ pub fn parse_metadata(path: &Path) -> Result<SessionMetadata> {
         if ty != "user" && ty != "assistant" {
             continue;
         }
-        if v.get("isSidechain").and_then(|x| x.as_bool()).unwrap_or(false) {
+        if v.get("isSidechain")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false)
+        {
             continue;
         }
         if v.get("isMeta").and_then(|x| x.as_bool()).unwrap_or(false) {
@@ -115,7 +119,10 @@ pub fn parse_recent(path: &Path, n: usize) -> Result<Vec<Event>> {
             Err(_) => continue,
         };
         let ty = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
-        let is_sidechain = v.get("isSidechain").and_then(|x| x.as_bool()).unwrap_or(false);
+        let is_sidechain = v
+            .get("isSidechain")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false);
         let is_meta = v.get("isMeta").and_then(|x| x.as_bool()).unwrap_or(false);
         if is_sidechain || is_meta {
             continue;
@@ -374,9 +381,15 @@ mod tests {
         let events = parse_recent(&path, 100).unwrap();
         assert_eq!(events.len(), 4);
         assert!(matches!(&events[0].kind, EventKind::UserText(s) if s == "first user message"));
-        assert!(matches!(&events[1].kind, EventKind::AssistantText(s) if s == "first claude reply"));
-        assert!(matches!(&events[2].kind, EventKind::AssistantToolUse { name, .. } if name == "Bash"));
-        assert!(matches!(&events[3].kind, EventKind::UserToolResult { tool_id, .. } if tool_id == "tu_1"));
+        assert!(
+            matches!(&events[1].kind, EventKind::AssistantText(s) if s == "first claude reply")
+        );
+        assert!(
+            matches!(&events[2].kind, EventKind::AssistantToolUse { name, .. } if name == "Bash")
+        );
+        assert!(
+            matches!(&events[3].kind, EventKind::UserToolResult { tool_id, .. } if tool_id == "tu_1")
+        );
     }
 
     #[test]

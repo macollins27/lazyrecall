@@ -12,7 +12,7 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result};
+use crate::error::{Error, Result};
 
 #[derive(Debug, Clone)]
 pub struct Project {
@@ -28,17 +28,21 @@ pub struct Project {
 }
 
 pub fn projects_root() -> Result<PathBuf> {
-    let home = env::var("HOME").context("HOME env var not set")?;
+    let home = env::var("HOME").map_err(|_| Error::HomeUnset)?;
     Ok(PathBuf::from(home).join(".claude").join("projects"))
 }
 
 pub fn list_projects() -> Result<Vec<Project>> {
-    let root = projects_root()?;
+    list_projects_in(&projects_root()?)
+}
+
+/// `list_projects` with the root path injectable. Used by tests.
+pub fn list_projects_in(root: &Path) -> Result<Vec<Project>> {
     if !root.exists() {
         return Ok(vec![]);
     }
     let mut projects = Vec::new();
-    for entry in fs::read_dir(&root)? {
+    for entry in fs::read_dir(root)? {
         let entry = entry?;
         if !entry.file_type()?.is_dir() {
             continue;
@@ -77,7 +81,12 @@ pub fn list_projects() -> Result<Vec<Project>> {
 }
 
 pub fn list_sessions(project: &Project) -> Result<Vec<PathBuf>> {
-    let dir = projects_root()?.join(&project.encoded_cwd);
+    list_sessions_in(&projects_root()?, project)
+}
+
+/// `list_sessions` with the root path injectable. Used by tests.
+pub fn list_sessions_in(root: &Path, project: &Project) -> Result<Vec<PathBuf>> {
+    let dir = root.join(&project.encoded_cwd);
     let mut sessions = Vec::new();
     for entry in fs::read_dir(&dir)? {
         let entry = entry?;
@@ -145,4 +154,94 @@ fn inspect_newest_session(dir: &Path) -> Result<(Option<String>, Option<i64>)> {
         }
     }
     Ok((cwd, mtime_unix))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs::File;
+    use std::io::Write;
+
+    fn write_jsonl(dir: &Path, name: &str, lines: &[serde_json::Value]) -> PathBuf {
+        let path = dir.join(name);
+        let mut f = File::create(&path).unwrap();
+        for line in lines {
+            writeln!(f, "{}", serde_json::to_string(line).unwrap()).unwrap();
+        }
+        f.flush().unwrap();
+        path
+    }
+
+    #[test]
+    fn list_projects_recovers_real_cwd_from_jsonl() {
+        let root = tempfile::tempdir().unwrap();
+        let proj_a = root.path().join("-Users-test-old");
+        let proj_b = root.path().join("-Users-test-new");
+        std::fs::create_dir(&proj_a).unwrap();
+        std::fs::create_dir(&proj_b).unwrap();
+
+        write_jsonl(
+            &proj_a,
+            "old.jsonl",
+            &[
+                serde_json::json!({"type": "user", "cwd": "/Users/test/old", "message": {"content": "x"}}),
+            ],
+        );
+        write_jsonl(
+            &proj_b,
+            "new.jsonl",
+            &[
+                serde_json::json!({"type": "user", "cwd": "/Users/test/new", "message": {"content": "x"}}),
+            ],
+        );
+
+        let projects = list_projects_in(root.path()).unwrap();
+        assert_eq!(projects.len(), 2);
+        // Recovered cwd from JSONL (not from the directory name, which is lossy).
+        assert!(projects
+            .iter()
+            .any(|p| p.real_cwd.as_deref() == Some("/Users/test/new")));
+        assert!(projects
+            .iter()
+            .any(|p| p.real_cwd.as_deref() == Some("/Users/test/old")));
+        // Display name is the last segment of the recovered cwd.
+        let new_proj = projects
+            .iter()
+            .find(|p| p.encoded_cwd == "-Users-test-new")
+            .unwrap();
+        assert_eq!(new_proj.display_name.as_deref(), Some("new"));
+        // Both have a recovered mtime.
+        assert!(new_proj.latest_mtime_unix.is_some());
+    }
+
+    #[test]
+    fn list_projects_returns_empty_when_root_missing() {
+        let root = tempfile::tempdir().unwrap();
+        let missing = root.path().join("does-not-exist");
+        let projects = list_projects_in(&missing).unwrap();
+        assert!(projects.is_empty());
+    }
+
+    #[test]
+    fn list_sessions_filters_to_jsonl() {
+        let root = tempfile::tempdir().unwrap();
+        let proj_dir = root.path().join("-tmp-proj");
+        std::fs::create_dir(&proj_dir).unwrap();
+        File::create(proj_dir.join("a.jsonl")).unwrap();
+        File::create(proj_dir.join("b.jsonl")).unwrap();
+        File::create(proj_dir.join("readme.txt")).unwrap();
+
+        let project = Project {
+            encoded_cwd: "-tmp-proj".to_string(),
+            session_count: 2,
+            real_cwd: None,
+            display_name: None,
+            latest_mtime_unix: None,
+        };
+        let sessions = list_sessions_in(root.path(), &project).unwrap();
+        assert_eq!(sessions.len(), 2);
+        assert!(sessions
+            .iter()
+            .all(|p| p.extension().is_some_and(|e| e == "jsonl")));
+    }
 }

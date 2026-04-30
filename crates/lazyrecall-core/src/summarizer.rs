@@ -1,10 +1,12 @@
 //! Summarize a session transcript using Claude Haiku 4.5.
 //!
-//! V1: caller passes a transcript slice (already truncated to fit context); we POST
-//! to the Anthropic Messages API and return a single-line summary.
+//! The caller passes a transcript slice (already truncated by `summarizer_worker`
+//! to fit context); this module POSTs to the Anthropic Messages API and returns
+//! a single-line summary.
 
-use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+
+use crate::error::{Error, Result};
 
 const ANTHROPIC_API: &str = "https://api.anthropic.com/v1/messages";
 const MODEL: &str = "claude-haiku-4-5-20251001";
@@ -12,6 +14,7 @@ const SUMMARY_PROMPT: &str = "Summarize this Claude Code session in exactly 12 w
 Focus on what was achieved or attempted, not on conversational filler. \
 Output only the summary, no preamble.";
 
+#[derive(Clone)]
 pub struct Summarizer {
     client: reqwest::Client,
     api_key: String,
@@ -50,8 +53,7 @@ impl Summarizer {
     }
 
     pub fn from_env() -> Result<Self> {
-        let api_key =
-            std::env::var("ANTHROPIC_API_KEY").context("ANTHROPIC_API_KEY env var not set")?;
+        let api_key = std::env::var("ANTHROPIC_API_KEY").map_err(|_| Error::ApiKeyUnset)?;
         Ok(Self::new(api_key))
     }
 
@@ -82,7 +84,7 @@ impl Summarizer {
             .into_iter()
             .next()
             .map(|c| c.text)
-            .unwrap_or_default();
+            .ok_or(Error::EmptyApiResponse)?;
         Ok(text.trim().to_string())
     }
 }
