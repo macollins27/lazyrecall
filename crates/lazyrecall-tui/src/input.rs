@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, MouseEventKind};
 use ratatui::backend::Backend;
 use ratatui::Terminal;
 
@@ -19,28 +19,53 @@ pub fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result
         terminal.draw(|f| draw(f, app))?;
 
         if event::poll(POLL_INTERVAL)? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind != KeyEventKind::Press {
-                    continue;
-                }
-                match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-                    KeyCode::Char('j') | KeyCode::Down => app.move_down(),
-                    KeyCode::Char('k') | KeyCode::Up => app.move_up(),
-                    KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => app.cycle_focus(),
-                    KeyCode::BackTab | KeyCode::Left | KeyCode::Char('h') => app.cycle_focus_back(),
-                    KeyCode::Enter => match app.focus {
-                        Pane::Projects => app.focus = Pane::Sessions,
-                        Pane::Sessions => {
-                            app.request_resume();
-                            if app.resume_request.is_some() {
-                                return Ok(());
+            match event::read()? {
+                Event::Key(key) => {
+                    if key.kind != KeyEventKind::Press {
+                        continue;
+                    }
+                    match key.code {
+                        KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                        KeyCode::Char('j') | KeyCode::Down => app.move_down(),
+                        KeyCode::Char('k') | KeyCode::Up => app.move_up(),
+                        KeyCode::PageDown => app.page_down(),
+                        KeyCode::PageUp => app.page_up(),
+                        KeyCode::Char('g') => {
+                            if matches!(app.focus, Pane::Preview) {
+                                app.preview_scroll = 0;
                             }
                         }
-                        Pane::Preview => {}
-                    },
-                    _ => {}
+                        KeyCode::Char('G') => {
+                            if matches!(app.focus, Pane::Preview) {
+                                app.preview_scroll = u16::MAX;
+                            }
+                        }
+                        KeyCode::Char('1') => app.set_focus(Pane::Projects),
+                        KeyCode::Char('2') => app.set_focus(Pane::Sessions),
+                        KeyCode::Char('3') => app.set_focus(Pane::Preview),
+                        KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => app.cycle_focus(),
+                        KeyCode::BackTab | KeyCode::Left | KeyCode::Char('h') => {
+                            app.cycle_focus_back()
+                        }
+                        KeyCode::Enter => match app.focus {
+                            Pane::Projects => app.focus = Pane::Sessions,
+                            Pane::Sessions => {
+                                app.request_resume();
+                                if app.resume_request.is_some() {
+                                    return Ok(());
+                                }
+                            }
+                            Pane::Preview => {}
+                        },
+                        _ => {}
+                    }
                 }
+                Event::Mouse(mouse) => match mouse.kind {
+                    MouseEventKind::ScrollDown => app.move_down(),
+                    MouseEventKind::ScrollUp => app.move_up(),
+                    _ => {}
+                },
+                _ => {}
             }
         }
 

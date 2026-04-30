@@ -24,11 +24,13 @@ pub struct App {
     pub sessions: Vec<PathBuf>,
     pub session_state: ListState,
     pub metadata_cache: HashMap<PathBuf, parser::SessionMetadata>,
-    pub recent_cache: HashMap<PathBuf, Vec<SessionEvent>>,
+    pub events_cache: HashMap<PathBuf, Vec<SessionEvent>>,
     pub summary_cache: HashMap<String, String>,
     pub focus: Pane,
     pub resume_request: Option<(String, Option<String>)>,
     pub last_loaded_project_idx: Option<usize>,
+    pub preview_scroll: u16,
+    pub last_preview_session: Option<PathBuf>,
     pub index: Index,
     pub stats: IndexStats,
     pub api_key_set: bool,
@@ -47,11 +49,13 @@ impl App {
             sessions: Vec::new(),
             session_state: ListState::default(),
             metadata_cache: HashMap::new(),
-            recent_cache: HashMap::new(),
+            events_cache: HashMap::new(),
             summary_cache: HashMap::new(),
             focus: Pane::Projects,
             resume_request: None,
             last_loaded_project_idx: None,
+            preview_scroll: 0,
+            last_preview_session: None,
             index,
             stats,
             api_key_set,
@@ -113,13 +117,18 @@ impl App {
         self.metadata_cache.get(&path)
     }
 
-    pub fn current_recent_events(&mut self) -> Option<&Vec<SessionEvent>> {
+    pub fn current_events(&mut self) -> Option<&Vec<SessionEvent>> {
         let path = self.current_session()?.clone();
-        if !self.recent_cache.contains_key(&path) {
-            let events = parser::parse_recent(&path, 6).unwrap_or_default();
-            self.recent_cache.insert(path.clone(), events);
+        // Reset scroll when the selected session changes.
+        if self.last_preview_session.as_ref() != Some(&path) {
+            self.preview_scroll = 0;
+            self.last_preview_session = Some(path.clone());
         }
-        self.recent_cache.get(&path)
+        if !self.events_cache.contains_key(&path) {
+            let events = parser::parse_all(&path).unwrap_or_default();
+            self.events_cache.insert(path.clone(), events);
+        }
+        self.events_cache.get(&path)
     }
 
     pub fn move_down(&mut self) {
@@ -129,7 +138,9 @@ impl App {
                 self.refresh_sessions();
             }
             Pane::Sessions => move_state(&mut self.session_state, self.sessions.len(), 1),
-            Pane::Preview => {}
+            Pane::Preview => {
+                self.preview_scroll = self.preview_scroll.saturating_add(1);
+            }
         }
     }
 
@@ -140,7 +151,35 @@ impl App {
                 self.refresh_sessions();
             }
             Pane::Sessions => move_state(&mut self.session_state, self.sessions.len(), -1),
-            Pane::Preview => {}
+            Pane::Preview => {
+                self.preview_scroll = self.preview_scroll.saturating_sub(1);
+            }
+        }
+    }
+
+    pub fn page_down(&mut self) {
+        match self.focus {
+            Pane::Preview => {
+                self.preview_scroll = self.preview_scroll.saturating_add(10);
+            }
+            _ => {
+                for _ in 0..10 {
+                    self.move_down();
+                }
+            }
+        }
+    }
+
+    pub fn page_up(&mut self) {
+        match self.focus {
+            Pane::Preview => {
+                self.preview_scroll = self.preview_scroll.saturating_sub(10);
+            }
+            _ => {
+                for _ in 0..10 {
+                    self.move_up();
+                }
+            }
         }
     }
 
@@ -158,6 +197,10 @@ impl App {
             Pane::Sessions => Pane::Projects,
             Pane::Preview => Pane::Sessions,
         };
+    }
+
+    pub fn set_focus(&mut self, pane: Pane) {
+        self.focus = pane;
     }
 
     pub fn request_resume(&mut self) {

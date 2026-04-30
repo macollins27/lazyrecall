@@ -107,9 +107,9 @@ pub fn parse_metadata(path: &Path) -> Result<SessionMetadata> {
     })
 }
 
-/// Parse the last `n` user/assistant/system events from the JSONL.
+/// Parse all user/assistant/system events from the JSONL, in order.
 /// Sidechain (subagent) and meta events are skipped.
-pub fn parse_recent(path: &Path, n: usize) -> Result<Vec<Event>> {
+pub fn parse_all(path: &Path) -> Result<Vec<Event>> {
     let content = std::fs::read_to_string(path)?;
     let mut events: Vec<Event> = Vec::new();
 
@@ -150,6 +150,12 @@ pub fn parse_recent(path: &Path, n: usize) -> Result<Vec<Event>> {
         }
     }
 
+    Ok(events)
+}
+
+/// Parse the last `n` user/assistant/system events from the JSONL.
+pub fn parse_recent(path: &Path, n: usize) -> Result<Vec<Event>> {
+    let mut events = parse_all(path)?;
     let total = events.len();
     Ok(if total > n {
         events.split_off(total - n)
