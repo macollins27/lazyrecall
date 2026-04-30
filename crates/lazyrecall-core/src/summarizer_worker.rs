@@ -31,13 +31,13 @@ pub async fn run(index: Index, summarizer: Summarizer) -> Result<()> {
             Ok(missing) => {
                 for (id, path) in missing {
                     if let Err(e) = summarize_one(&index, &summarizer, &id, &path).await {
-                        eprintln!("recall: summarize {} failed: {}", id, e);
+                        eprintln!("lazyrecall: summarize {} failed: {}", id, e);
                         tokio::time::sleep(Duration::from_secs(ERROR_BACKOFF_SECONDS)).await;
                     }
                 }
             }
             Err(e) => {
-                eprintln!("recall: index query failed: {}", e);
+                eprintln!("lazyrecall: index query failed: {}", e);
                 tokio::time::sleep(Duration::from_secs(ERROR_BACKOFF_SECONDS)).await;
             }
         }

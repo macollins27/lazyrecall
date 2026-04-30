@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/recall-core", "crates/recall-tui"]
+members = ["crates/lazyrecall-core", "crates/lazyrecall-tui"]
 resolver = "2"
 
 [workspace.package]

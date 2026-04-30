@@ -687,6 +687,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "lazyrecall-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "notify",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "walkdir",
+]
+
+[[package]]
+name = "lazyrecall-tui"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "crossterm",
+ "lazyrecall-core",
+ "ratatui",
+ "tokio",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.186"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1016,32 +1042,6 @@ dependencies = [
  "unicode-segmentation",
  "unicode-truncate",
  "unicode-width",
-]
-
-[[package]]
-name = "recall-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "notify",
- "reqwest",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "walkdir",
-]
-
-[[package]]
-name = "recall-tui"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "crossterm",
- "ratatui",
- "recall-core",
- "tokio",
 ]
 
 [[package]]

@@ -18,11 +18,11 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
-use recall_core::{
+use lazyrecall_core::{
     discovery, parser, summarizer_worker, watcher, EventKind, Index, IndexStats, Project,
     Summarizer,
 };
-use recall_core::Event as SessionEvent;
+use lazyrecall_core::Event as SessionEvent;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Pane {
@@ -196,7 +196,7 @@ impl App {
 }
 
 /// Load the Anthropic API key. Prefers ANTHROPIC_API_KEY in the environment;
-/// falls back to a key stored at ~/.recall/api-key (one line, mode 0600 recommended).
+/// falls back to a key stored at ~/.lazyrecall/api-key (one line, mode 0600 recommended).
 /// The file-based path keeps the secret out of shell history and shell config.
 fn load_api_key() -> Option<String> {
     if let Ok(k) = std::env::var("ANTHROPIC_API_KEY") {
@@ -207,7 +207,7 @@ fn load_api_key() -> Option<String> {
     }
     let home = std::env::var("HOME").ok()?;
     let path = std::path::PathBuf::from(home)
-        .join(".recall")
+        .join(".lazyrecall")
         .join("api-key");
     let content = std::fs::read_to_string(&path).ok()?;
     let trimmed = content.trim().to_string();
@@ -265,12 +265,12 @@ fn main() -> Result<()> {
             let watcher_index = match Index::open(&watcher_index_path) {
                 Ok(idx) => idx,
                 Err(e) => {
-                    eprintln!("recall: watcher could not open index: {}", e);
+                    eprintln!("lazyrecall: watcher could not open index: {}", e);
                     return;
                 }
             };
             if let Err(e) = watcher::run(&projects_root, watcher_index) {
-                eprintln!("recall: watcher exited: {}", e);
+                eprintln!("lazyrecall: watcher exited: {}", e);
             }
         });
     }
@@ -283,7 +283,7 @@ fn main() -> Result<()> {
             let worker_index = match Index::open(&worker_index_path) {
                 Ok(idx) => idx,
                 Err(e) => {
-                    eprintln!("recall: summarizer worker could not open index: {}", e);
+                    eprintln!("lazyrecall: summarizer worker could not open index: {}", e);
                     return;
                 }
             };
@@ -294,7 +294,7 @@ fn main() -> Result<()> {
             {
                 Ok(rt) => rt,
                 Err(e) => {
-                    eprintln!("recall: summarizer worker tokio init failed: {}", e);
+                    eprintln!("lazyrecall: summarizer worker tokio init failed: {}", e);
                     return;
                 }
             };
@@ -331,7 +331,7 @@ fn main() -> Result<()> {
             cmd.current_dir(cwd);
         }
         let err = cmd.exec();
-        eprintln!("recall: failed to exec claude: {}", err);
+        eprintln!("lazyrecall: failed to exec claude: {}", err);
         std::process::exit(1);
     }
 

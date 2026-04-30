@@ -1,15 +1,15 @@
 [package]
-name = "recall-tui"
+name = "lazyrecall-tui"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [[bin]]
-name = "recall"
+name = "lazyrecall"
 path = "src/main.rs"
 
 [dependencies]
-recall-core = { path = "../recall-core" }
+lazyrecall-core = { path = "../lazyrecall-core" }
 anyhow.workspace = true
 tokio.workspace = true
 ratatui = "0.28"

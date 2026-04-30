@@ -25,7 +25,7 @@ pub fn run(projects_root: &Path, index: Index) -> Result<()> {
     for res in rx {
         match res {
             Ok(event) => handle_event(&index, event),
-            Err(e) => eprintln!("recall: watcher error: {}", e),
+            Err(e) => eprintln!("lazyrecall: watcher error: {}", e),
         }
     }
     Ok(())

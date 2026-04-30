@@ -1,4 +1,4 @@
-//! Persistent index over discovered sessions, stored at `~/.recall/index.db`.
+//! Persistent index over discovered sessions, stored at `~/.lazyrecall/index.db`.
 //!
 //! Schema is versioned from day 1 so V2+ migrations don't paint us into a corner.
 
@@ -45,7 +45,7 @@ CREATE INDEX IF NOT EXISTS idx_sessions_mtime ON sessions(mtime DESC);
 impl Index {
     pub fn data_dir() -> Result<PathBuf> {
         let home = std::env::var("HOME").context("HOME env var not set")?;
-        Ok(PathBuf::from(home).join(".recall"))
+        Ok(PathBuf::from(home).join(".lazyrecall"))
     }
 
     pub fn default_path() -> Result<PathBuf> {

@@ -1,4 +1,4 @@
-//! recall-core: discovery, parsing, indexing, and summarization of Claude Code session transcripts.
+//! lazyrecall-core: discovery, parsing, indexing, and summarization of Claude Code session transcripts.
 
 pub mod discovery;
 pub mod index;
