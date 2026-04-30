@@ -1,0 +1,9 @@
+{"type":"user","timestamp":"2026-04-30T12:00:00Z","cwd":"/Users/example/projects/demo","message":{"role":"user","content":"Help me set up a Rust project for a CLI tool that parses CSV files."}}
+{"type":"assistant","timestamp":"2026-04-30T12:00:02Z","cwd":"/Users/example/projects/demo","message":{"role":"assistant","content":[{"type":"text","text":"Sure — I'll start by initializing a new cargo binary and adding csv + clap as dependencies."},{"type":"tool_use","id":"tu_1","name":"Bash","input":{"command":"cargo new csvtool --bin"}}]}}
+{"type":"user","timestamp":"2026-04-30T12:00:03Z","cwd":"/Users/example/projects/demo","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu_1","content":"     Created binary (application) `csvtool` package"}]}}
+{"type":"assistant","timestamp":"2026-04-30T12:00:05Z","cwd":"/Users/example/projects/demo","message":{"role":"assistant","content":[{"type":"text","text":"Created. Now adding dependencies."},{"type":"tool_use","id":"tu_2","name":"Bash","input":{"command":"cd csvtool && cargo add csv clap --features clap/derive"}}]}}
+{"type":"user","timestamp":"2026-04-30T12:00:06Z","cwd":"/Users/example/projects/demo","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu_2","content":"      Adding csv v1.3.0\n      Adding clap v4.5.0"}]}}
+{"type":"user","timestamp":"2026-04-30T12:00:10Z","isSidechain":true,"message":{"role":"user","content":"This is a subagent message that should be filtered out."}}
+{"type":"user","timestamp":"2026-04-30T12:00:11Z","isMeta":true,"message":{"role":"user","content":"This is a meta message that should be filtered out."}}
+{"type":"assistant","timestamp":"2026-04-30T12:00:15Z","cwd":"/Users/example/projects/demo","message":{"role":"assistant","content":[{"type":"text","text":"Project initialized with csv and clap. Ready for the parsing logic."}]}}
+{"type":"file-history-snapshot","timestamp":"2026-04-30T12:00:16Z","snapshot":{}}
