@@ -375,13 +375,7 @@ fn draw_projects(f: &mut Frame, area: Rect, app: &mut App) {
     let items: Vec<ListItem> = app
         .projects
         .iter()
-        .map(|p| {
-            ListItem::new(format!(
-                "{} ({})",
-                display_project(&p.encoded_cwd),
-                p.session_count
-            ))
-        })
+        .map(|p| ListItem::new(format!("{} ({})", display_project(p), p.session_count)))
         .collect();
     let list = List::new(items)
         .block(border(" projects ", app.focus == Pane::Projects))
@@ -390,20 +384,25 @@ fn draw_projects(f: &mut Frame, area: Rect, app: &mut App) {
 }
 
 fn draw_sessions(f: &mut Frame, area: Rect, app: &mut App) {
+    let dim = Style::default().add_modifier(Modifier::DIM);
     let items: Vec<ListItem> = app
         .sessions
         .iter()
         .map(|p| {
             let id = p.file_stem().and_then(|s| s.to_str()).unwrap_or("?");
-            let short = id.split('-').next().unwrap_or(id);
-            let body = match app.summary_cache.get(id) {
-                Some(s) => truncate_display(&oneline(s), 60),
-                None => mtime(p)
-                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                    .map(|d| format_relative(d.as_secs() as i64))
-                    .unwrap_or_else(|| "?".to_string()),
+            let when = mtime(p)
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| format_relative(d.as_secs() as i64))
+                .unwrap_or_else(|| "?".to_string());
+            let line = match app.summary_cache.get(id) {
+                Some(s) => Line::from(vec![
+                    Span::raw(truncate_display(&oneline(s), 60)),
+                    Span::raw("  "),
+                    Span::styled(when, dim),
+                ]),
+                None => Line::from(Span::styled(when, dim)),
             };
-            ListItem::new(format!("{:<8}  {}", short, body))
+            ListItem::new(line)
         })
         .collect();
     let list = List::new(items)
@@ -512,8 +511,15 @@ fn border(title: &str, focused: bool) -> Block<'_> {
         .border_style(style)
 }
 
-fn display_project(encoded: &str) -> String {
-    encoded.strip_prefix('-').unwrap_or(encoded).to_string()
+fn display_project(project: &Project) -> String {
+    if let Some(name) = &project.display_name {
+        return name.clone();
+    }
+    project
+        .encoded_cwd
+        .strip_prefix('-')
+        .unwrap_or(&project.encoded_cwd)
+        .to_string()
 }
 
 fn format_relative(unix_seconds: i64) -> String {
