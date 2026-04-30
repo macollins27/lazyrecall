@@ -275,3 +275,130 @@ fn tool_result_text(v: Option<&serde_json::Value>) -> String {
 fn take_chars(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs::File;
+    use std::io::Write;
+    use std::path::PathBuf;
+
+    fn write_session(lines: &[serde_json::Value]) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let mut f = File::create(&path).unwrap();
+        for line in lines {
+            writeln!(f, "{}", serde_json::to_string(line).unwrap()).unwrap();
+        }
+        f.flush().unwrap();
+        (dir, path)
+    }
+
+    #[test]
+    fn metadata_extracts_cwd_counts_and_filters_meta_and_sidechain() {
+        let (_dir, path) = write_session(&[
+            serde_json::json!({
+                "type": "user",
+                "cwd": "/Users/test/proj",
+                "message": {"role": "user", "content": "first user message"},
+            }),
+            serde_json::json!({
+                "type": "assistant",
+                "cwd": "/Users/test/proj",
+                "message": {"role": "assistant", "content": [
+                    {"type": "text", "text": "first claude reply"},
+                    {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}, "id": "tu_1"},
+                ]},
+            }),
+            serde_json::json!({
+                "type": "user",
+                "isSidechain": true,
+                "message": {"role": "user", "content": "subagent prompt should be filtered"},
+            }),
+            serde_json::json!({
+                "type": "user",
+                "isMeta": true,
+                "message": {"role": "user", "content": "meta noise filtered too"},
+            }),
+            serde_json::json!({
+                "type": "user",
+                "message": {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "tu_1", "content": "file1.txt\nfile2.txt"},
+                ]},
+            }),
+            serde_json::json!({
+                "type": "assistant",
+                "message": {"role": "assistant", "content": [
+                    {"type": "text", "text": "I see the files"},
+                ]},
+            }),
+            serde_json::json!({
+                "type": "file-history-snapshot",
+                "snapshot": {},
+            }),
+        ]);
+
+        let meta = parse_metadata(&path).unwrap();
+        assert_eq!(meta.cwd.as_deref(), Some("/Users/test/proj"));
+        assert_eq!(meta.message_count, 4);
+        assert_eq!(meta.last_text_preview, "I see the files");
+    }
+
+    #[test]
+    fn parse_recent_extracts_typed_kinds_in_order() {
+        let (_dir, path) = write_session(&[
+            serde_json::json!({
+                "type": "user",
+                "message": {"role": "user", "content": "first user message"},
+            }),
+            serde_json::json!({
+                "type": "assistant",
+                "message": {"role": "assistant", "content": [
+                    {"type": "text", "text": "first claude reply"},
+                    {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}, "id": "tu_1"},
+                ]},
+            }),
+            serde_json::json!({
+                "type": "user",
+                "isSidechain": true,
+                "message": {"role": "user", "content": "filtered"},
+            }),
+            serde_json::json!({
+                "type": "user",
+                "message": {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "tu_1", "content": "file1.txt"},
+                ]},
+            }),
+        ]);
+
+        let events = parse_recent(&path, 100).unwrap();
+        assert_eq!(events.len(), 4);
+        assert!(matches!(&events[0].kind, EventKind::UserText(s) if s == "first user message"));
+        assert!(matches!(&events[1].kind, EventKind::AssistantText(s) if s == "first claude reply"));
+        assert!(matches!(&events[2].kind, EventKind::AssistantToolUse { name, .. } if name == "Bash"));
+        assert!(matches!(&events[3].kind, EventKind::UserToolResult { tool_id, .. } if tool_id == "tu_1"));
+    }
+
+    #[test]
+    fn malformed_lines_are_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.jsonl");
+        let mut f = File::create(&path).unwrap();
+        writeln!(
+            f,
+            r#"{{"type":"user","message":{{"role":"user","content":"valid"}}}}"#
+        )
+        .unwrap();
+        writeln!(f, "{{ this is not valid json }}").unwrap();
+        writeln!(
+            f,
+            r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"also valid"}}]}}}}"#
+        )
+        .unwrap();
+        f.flush().unwrap();
+
+        let meta = parse_metadata(&path).unwrap();
+        assert_eq!(meta.message_count, 2);
+        assert_eq!(meta.last_text_preview, "also valid");
+    }
+}
