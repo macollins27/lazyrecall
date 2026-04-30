@@ -1,21 +1,155 @@
+use std::collections::HashMap;
 use std::io;
-use std::time::Duration;
+use std::path::PathBuf;
+use std::process::Command;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
-use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use ratatui::backend::{Backend, CrosstermBackend};
-use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
-use ratatui::Terminal;
-use recall_core::{discovery, Project};
+use ratatui::text::Span;
+use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::{Frame, Terminal};
+use recall_core::{discovery, parser, Project};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pane {
+    Projects,
+    Sessions,
+    Preview,
+}
+
+struct App {
+    projects: Vec<Project>,
+    project_state: ListState,
+    sessions: Vec<PathBuf>,
+    session_state: ListState,
+    metadata_cache: HashMap<PathBuf, parser::SessionMetadata>,
+    focus: Pane,
+    resume_request: Option<String>,
+    last_loaded_project_idx: Option<usize>,
+}
+
+impl App {
+    fn new(projects: Vec<Project>) -> Self {
+        let mut project_state = ListState::default();
+        if !projects.is_empty() {
+            project_state.select(Some(0));
+        }
+        Self {
+            projects,
+            project_state,
+            sessions: Vec::new(),
+            session_state: ListState::default(),
+            metadata_cache: HashMap::new(),
+            focus: Pane::Projects,
+            resume_request: None,
+            last_loaded_project_idx: None,
+        }
+    }
+
+    fn refresh_sessions(&mut self) {
+        let Some(idx) = self.project_state.selected() else {
+            return;
+        };
+        if self.last_loaded_project_idx == Some(idx) {
+            return;
+        }
+        let project = self.projects[idx].clone();
+        self.sessions = discovery::list_sessions(&project).unwrap_or_default();
+        self.sessions.sort_by(|a, b| {
+            mtime(b).cmp(&mtime(a))
+        });
+        self.session_state = ListState::default();
+        if !self.sessions.is_empty() {
+            self.session_state.select(Some(0));
+        }
+        self.last_loaded_project_idx = Some(idx);
+    }
+
+    fn current_session(&self) -> Option<&PathBuf> {
+        self.session_state
+            .selected()
+            .and_then(|i| self.sessions.get(i))
+    }
+
+    fn current_session_metadata(&mut self) -> Option<&parser::SessionMetadata> {
+        let path = self.current_session()?.clone();
+        if !self.metadata_cache.contains_key(&path) {
+            if let Ok(meta) = parser::parse_metadata(&path) {
+                self.metadata_cache.insert(path.clone(), meta);
+            }
+        }
+        self.metadata_cache.get(&path)
+    }
+
+    fn move_down(&mut self) {
+        match self.focus {
+            Pane::Projects => {
+                move_state(&mut self.project_state, self.projects.len(), 1);
+                self.refresh_sessions();
+            }
+            Pane::Sessions => move_state(&mut self.session_state, self.sessions.len(), 1),
+            Pane::Preview => {}
+        }
+    }
+
+    fn move_up(&mut self) {
+        match self.focus {
+            Pane::Projects => {
+                move_state(&mut self.project_state, self.projects.len(), -1);
+                self.refresh_sessions();
+            }
+            Pane::Sessions => move_state(&mut self.session_state, self.sessions.len(), -1),
+            Pane::Preview => {}
+        }
+    }
+
+    fn cycle_focus(&mut self) {
+        self.focus = match self.focus {
+            Pane::Projects => Pane::Sessions,
+            Pane::Sessions => Pane::Preview,
+            Pane::Preview => Pane::Projects,
+        };
+    }
+
+    fn request_resume(&mut self) {
+        let stem = self
+            .current_session()
+            .and_then(|p| p.file_stem().and_then(|s| s.to_str()))
+            .map(|s| s.to_string());
+        if let Some(stem) = stem {
+            self.resume_request = Some(stem);
+        }
+    }
+}
+
+fn move_state(state: &mut ListState, len: usize, delta: i32) {
+    if len == 0 {
+        state.select(None);
+        return;
+    }
+    let cur = state.selected().unwrap_or(0) as i32;
+    let new = (cur + delta).rem_euclid(len as i32);
+    state.select(Some(new as usize));
+}
+
+fn mtime(path: &PathBuf) -> Option<SystemTime> {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
+}
 
 fn main() -> Result<()> {
     let projects = discovery::list_projects().unwrap_or_default();
+    let mut app = App::new(projects);
+    app.refresh_sessions();
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -23,7 +157,7 @@ fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let res = run_loop(&mut terminal, &projects);
+    let res = run_loop(&mut terminal, &mut app);
 
     disable_raw_mode()?;
     execute!(
@@ -33,49 +167,155 @@ fn main() -> Result<()> {
     )?;
     terminal.show_cursor()?;
 
-    res
+    res?;
+
+    if let Some(session_id) = app.resume_request {
+        use std::os::unix::process::CommandExt;
+        let err = Command::new("claude")
+            .arg("--resume")
+            .arg(&session_id)
+            .exec();
+        eprintln!("recall: failed to exec claude: {}", err);
+        std::process::exit(1);
+    }
+
+    Ok(())
 }
 
-fn run_loop<B: Backend>(terminal: &mut Terminal<B>, projects: &[Project]) -> Result<()> {
+fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
     loop {
-        terminal.draw(|f| {
-            let chunks = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([
-                    Constraint::Percentage(25),
-                    Constraint::Percentage(35),
-                    Constraint::Percentage(40),
-                ])
-                .split(f.area());
-
-            let project_items: Vec<ListItem> = projects
-                .iter()
-                .map(|p| ListItem::new(format!("{} ({})", p.encoded_cwd, p.session_count)))
-                .collect();
-            let project_list = List::new(project_items)
-                .block(
-                    Block::default()
-                        .title(" projects ")
-                        .borders(Borders::ALL),
-                )
-                .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
-            f.render_widget(project_list, chunks[0]);
-
-            let sessions = Paragraph::new("(sessions — wire up next)")
-                .block(Block::default().title(" sessions ").borders(Borders::ALL));
-            f.render_widget(sessions, chunks[1]);
-
-            let preview = Paragraph::new("(preview — wire up next)\n\nq to quit")
-                .block(Block::default().title(" preview ").borders(Borders::ALL));
-            f.render_widget(preview, chunks[2]);
-        })?;
+        terminal.draw(|f| draw(f, app))?;
 
         if event::poll(Duration::from_millis(200))? {
             if let Event::Key(key) = event::read()? {
-                if matches!(key.code, KeyCode::Char('q') | KeyCode::Esc) {
-                    return Ok(());
+                if key.kind != KeyEventKind::Press {
+                    continue;
+                }
+                match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                    KeyCode::Char('j') | KeyCode::Down => app.move_down(),
+                    KeyCode::Char('k') | KeyCode::Up => app.move_up(),
+                    KeyCode::Tab => app.cycle_focus(),
+                    KeyCode::Enter => match app.focus {
+                        Pane::Projects => app.focus = Pane::Sessions,
+                        Pane::Sessions => {
+                            app.request_resume();
+                            if app.resume_request.is_some() {
+                                return Ok(());
+                            }
+                        }
+                        Pane::Preview => {}
+                    },
+                    _ => {}
                 }
             }
         }
+    }
+}
+
+fn draw(f: &mut Frame, app: &mut App) {
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(25),
+            Constraint::Percentage(35),
+            Constraint::Percentage(40),
+        ])
+        .split(f.area());
+
+    draw_projects(f, chunks[0], app);
+    draw_sessions(f, chunks[1], app);
+    draw_preview(f, chunks[2], app);
+}
+
+fn draw_projects(f: &mut Frame, area: Rect, app: &mut App) {
+    let items: Vec<ListItem> = app
+        .projects
+        .iter()
+        .map(|p| {
+            ListItem::new(format!(
+                "{} ({})",
+                display_project(&p.encoded_cwd),
+                p.session_count
+            ))
+        })
+        .collect();
+    let list = List::new(items)
+        .block(border(" projects ", app.focus == Pane::Projects))
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    f.render_stateful_widget(list, area, &mut app.project_state);
+}
+
+fn draw_sessions(f: &mut Frame, area: Rect, app: &mut App) {
+    let items: Vec<ListItem> = app
+        .sessions
+        .iter()
+        .map(|p| {
+            let id = p.file_stem().and_then(|s| s.to_str()).unwrap_or("?");
+            let short = id.split('-').next().unwrap_or(id);
+            let when = mtime(p)
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| format_relative(d.as_secs() as i64))
+                .unwrap_or_else(|| "?".to_string());
+            ListItem::new(format!("{:<8}  {}", short, when))
+        })
+        .collect();
+    let list = List::new(items)
+        .block(border(" sessions ", app.focus == Pane::Sessions))
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    f.render_stateful_widget(list, area, &mut app.session_state);
+}
+
+fn draw_preview(f: &mut Frame, area: Rect, app: &mut App) {
+    let body = match app.current_session_metadata() {
+        Some(meta) => format!(
+            "id:        {}\nmessages:  {}\nmtime:     {}\n\n--- last message ---\n\n{}",
+            meta.id,
+            meta.message_count,
+            format_relative(meta.last_modified_unix),
+            if meta.last_message_preview.is_empty() {
+                "(no preview available)"
+            } else {
+                &meta.last_message_preview
+            }
+        ),
+        None => "(no session selected)\n\nq: quit  j/k: nav  tab: focus  enter: resume".to_string(),
+    };
+    let p = Paragraph::new(body)
+        .wrap(Wrap { trim: false })
+        .block(border(" preview ", app.focus == Pane::Preview));
+    f.render_widget(p, area);
+}
+
+fn border(title: &str, focused: bool) -> Block<'_> {
+    let style = if focused {
+        Style::default().add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+    Block::default()
+        .title(Span::styled(title, style))
+        .borders(Borders::ALL)
+        .border_style(style)
+}
+
+fn display_project(encoded: &str) -> String {
+    encoded.strip_prefix('-').unwrap_or(encoded).to_string()
+}
+
+fn format_relative(unix_seconds: i64) -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let delta = now - unix_seconds;
+    if delta < 60 {
+        format!("{}s ago", delta)
+    } else if delta < 3600 {
+        format!("{}m ago", delta / 60)
+    } else if delta < 86400 {
+        format!("{}h ago", delta / 3600)
+    } else {
+        format!("{}d ago", delta / 86400)
     }
 }
