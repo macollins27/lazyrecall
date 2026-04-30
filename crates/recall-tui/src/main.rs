@@ -19,7 +19,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 use recall_core::{
-    discovery, parser, summarizer_worker, EventKind, Index, IndexStats, Project, Summarizer,
+    discovery, parser, summarizer_worker, watcher, EventKind, Index, IndexStats, Project,
+    Summarizer,
 };
 use recall_core::Event as SessionEvent;
 
@@ -215,6 +216,22 @@ fn main() -> Result<()> {
 
     let projects = discovery::list_projects().unwrap_or_default();
     seed_index(&index, &projects);
+
+    if let Ok(projects_root) = discovery::projects_root() {
+        let watcher_index_path = index_path.clone();
+        std::thread::spawn(move || {
+            let watcher_index = match Index::open(&watcher_index_path) {
+                Ok(idx) => idx,
+                Err(e) => {
+                    eprintln!("recall: watcher could not open index: {}", e);
+                    return;
+                }
+            };
+            if let Err(e) = watcher::run(&projects_root, watcher_index) {
+                eprintln!("recall: watcher exited: {}", e);
+            }
+        });
+    }
 
     let api_key = std::env::var("ANTHROPIC_API_KEY").ok();
     let api_key_set = api_key.is_some();

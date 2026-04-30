@@ -5,6 +5,7 @@ pub mod index;
 pub mod parser;
 pub mod summarizer;
 pub mod summarizer_worker;
+pub mod watcher;
 
 pub use discovery::Project;
 pub use index::{Index, IndexStats};
