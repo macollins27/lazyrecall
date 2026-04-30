@@ -1,32 +1,85 @@
 # lazyrecall
 
-Lazygit-style TUI for browsing, searching, and resuming Claude Code sessions. The memory layer Claude Code is missing.
+> The memory layer Claude Code is missing. A lazygit-style TUI for browsing, searching, and resuming every session you've ever had with `claude`.
+
+[![CI](https://github.com/macollins27/lazyrecall/actions/workflows/ci.yml/badge.svg)](https://github.com/macollins27/lazyrecall/actions/workflows/ci.yml)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+[![Rust](https://img.shields.io/badge/rust-stable-orange.svg)](https://www.rust-lang.org)
+
+![demo](docs/demo.gif)
 
 ## Why
 
-Every `claude` process writes a JSONL transcript at `~/.claude/projects/{encoded-cwd}/{session-uuid}.jsonl`, and `claude --resume <id>` brings the entire conversation + agent state back. The data is there; the UX is hidden behind a flag and a UUID. lazyrecall is the missing front end: browse every session across every project, see auto-generated summaries inline, one-keystroke resume.
+Every `claude` process writes a JSONL transcript to `~/.claude/projects/{encoded-cwd}/{session-uuid}.jsonl`, and `claude --resume <id>` brings the entire conversation + agent state back. The data is there; the UX is hidden behind a flag and a UUID.
 
-## Status
+`lazyrecall` is the missing front end:
 
-V1 feature-complete. Compiles clean with zero warnings. **Not yet manually validated end-to-end** — the per-feature `cargo check` greens are necessary but not sufficient. First-run smoke testing pending.
+- Browse every session across every project, sorted by recency
+- See an auto-generated one-line summary inline next to each session
+- Press `Enter` and you're dropped right back into the conversation, in the right working directory
 
-## V1 features
+## Install
 
-- Three-pane TUI (`projects` / `sessions` / `preview`) with lazygit-style focus + bold border on active pane
-- Tab cycles focus, `j/k` (or arrows) navigate, Enter on Sessions pane invokes `claude --resume <id>` in the host terminal via Unix `exec()`
-- Persistent SQLite index at `~/.lazyrecall/index.db` with a versioned schema (`schema_version` table from day 1 so V2+ migrations don't paint us into a corner)
-- Background Haiku 4.5 summarizer that runs when `ANTHROPIC_API_KEY` is set; processes sessions where `summary IS NULL`, writes one-line summaries back to the index. Uses tail-truncated transcripts (last 30K chars).
-- Live FS watcher (notify / FSEvents) on `~/.claude/projects/` so new sessions appear in the status counts without restart
-- Status bar: `N sessions · M summarized · K pending · summarizer working|idle|no ANTHROPIC_API_KEY`
-- Preview pane renders the last 6 events with role-coded labels: `[user]`, `[claude]`, `[tool]`, `[result]`, `[system]` — sidechain (subagent) and meta events filtered out
+### One-line (recommended)
 
-## Roadmap
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/macollins27/lazyrecall/releases/latest/download/lazyrecall-installer.sh | sh
+```
 
-- **V1** — TUI browser + auto-summarize + `--resume` + watcher [DONE]
-- **V1.5** — cross-session ripgrep with summary-aware ranking; `/` to fuzzy-filter
-- **V2** — tags, pins, "since-we-last-talked" context injector on resume
-- **V3** — embeddings + topic clusters, branch-graph view of forked sessions
-- **V4** — Tauri GUI ("claude.ai for local sessions")
+### Homebrew
+
+```bash
+brew install macollins27/lazyrecall/lazyrecall
+```
+
+### Cargo
+
+```bash
+cargo install --git https://github.com/macollins27/lazyrecall lazyrecall-tui
+```
+
+### From source
+
+```bash
+git clone https://github.com/macollins27/lazyrecall
+cd lazyrecall
+cargo install --path crates/lazyrecall-tui
+```
+
+## Quick start
+
+```bash
+lazyrecall
+```
+
+For automatic session summaries (powered by Claude Haiku 4.5), set your Anthropic API key:
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+```
+
+…or write the key to `~/.lazyrecall/api-key` (one line). Without it, `lazyrecall` works fine — summaries just stay blank.
+
+## Keys
+
+| Key                        | Action                                |
+| -------------------------- | ------------------------------------- |
+| `j` / `↓`                  | Move down in focused pane             |
+| `k` / `↑`                  | Move up in focused pane               |
+| `Tab` / `l` / `→`          | Cycle focus forward                   |
+| `Shift-Tab` / `h` / `←`    | Cycle focus back                      |
+| `Enter` (Projects)         | Move focus to Sessions                |
+| `Enter` (Sessions)         | Quit TUI and `claude --resume <id>`   |
+| `q` / `Esc`                | Quit                                  |
+
+## Features
+
+- **Three-pane layout** — projects, sessions, preview. Bold border on focused pane.
+- **Inline summaries** — a background worker calls Haiku on every session that doesn't have one yet and writes the result back to the index. Subsequent launches are instant.
+- **Live FS watcher** — `~/.claude/projects/` is watched recursively (notify / FSEvents). New sessions appear in the status bar without restart.
+- **Resume in the right cwd** — `claude --resume` is scoped to its cwd. lazyrecall captures each session's recorded `cwd` from the transcript and `chdir`s before exec.
+- **Persistent SQLite index** at `~/.lazyrecall/index.db` with a versioned schema from day one.
+- **Tail-truncated summaries** — sessions can be hundreds of MB. The worker keeps the last 30K chars (most representative of what was achieved) before sending to Haiku.
 
 ## Architecture
 
@@ -36,56 +89,46 @@ crates/
 └── lazyrecall-tui/    binary `lazyrecall`: ratatui frontend
 ```
 
-Library + binary split so a future Tauri GUI reuses the core without a rewrite. The summarizer worker and FS watcher each run on their own `std::thread` with their own `Index` (rusqlite Connection) connection — `Connection` is `Send` not `Sync`, but multiple connections on the same DB file are fine.
+A library + binary split, so a future GUI (Tauri, web, anything) can reuse the core without a rewrite.
+
+Three threads, three SQLite connections (rusqlite's `Connection` is `Send` but not `Sync`):
+
+1. **Main / TUI thread** — ratatui event loop, owns the index for reads.
+2. **Summarizer worker** — polls for sessions where `summary IS NULL`, calls Haiku concurrently, writes back.
+3. **FS watcher** — debounced (200 ms) recursive watch on `~/.claude/projects/`.
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the full tour.
+
+## Roadmap
+
+- **V1** — TUI browser + auto-summarize + `--resume` + watcher ✅
+- **V1.5** — cross-session ripgrep with summary-aware ranking; `/` to fuzzy-filter
+- **V2** — tags, pins, "since-we-last-talked" context injector on resume
+- **V3** — embeddings + topic clusters, branch-graph view of forked sessions
+- **V4** — Tauri GUI ("claude.ai for local sessions")
 
 ## Stack
 
-Rust 2021. `ratatui` + `crossterm` (TUI). `rusqlite` with bundled SQLite (index). `notify` (file watcher). `reqwest` + `serde` (Anthropic Messages API for Haiku 4.5).
+Rust 2021 · `ratatui` + `crossterm` (TUI) · `rusqlite` with bundled SQLite (zero system deps) · `notify` + `notify-debouncer-mini` (file watcher) · `reqwest` + rustls (no OpenSSL) · `tokio` (only the summarizer uses async).
 
-## Install
+## Data locations
 
-From source:
+| Path | Purpose |
+| ---- | ------- |
+| `~/.claude/projects/{encoded-cwd}/{session-uuid}.jsonl` | Claude Code's source of truth. lazyrecall reads only — never writes. |
+| `~/.lazyrecall/index.db` | SQLite cache: session metadata + Haiku summaries. Safe to delete; regenerates on next run. |
+| `~/.lazyrecall/api-key` | Optional fallback API key file (one line). |
+| `~/.lazyrecall/log` | Recent error log for debugging. |
 
-```bash
-git clone https://github.com/macollins27/lazyrecall.git
-cd lazyrecall
-cargo install --path crates/lazyrecall-tui
-```
+## Contributing
 
-This installs the `lazyrecall` binary into `~/.cargo/bin/` (make sure that's on your `PATH`).
-
-For summaries, export your Anthropic API key:
-
-```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-```
-
-Or write it (one line) to `~/.lazyrecall/api-key`. Without the key, lazyrecall still works — summaries just stay blank.
-
-## Run
-
-```bash
-lazyrecall
-```
-
-## Keys
-
-| Key | Action |
-|-----|--------|
-| `j` / down | Move down in focused pane |
-| `k` / up | Move up in focused pane |
-| `Tab` / `l` / right | Cycle focus forward |
-| `Shift-Tab` / `h` / left | Cycle focus back |
-| `Enter` (on Projects) | Move focus to Sessions |
-| `Enter` (on Sessions) | Quit TUI and `claude --resume <id>` |
-| `q` / `Esc` | Quit |
-
-## Data
-
-- `~/.claude/projects/{encoded-cwd}/{session-uuid}.jsonl` — Claude Code's source of truth; lazyrecall reads only.
-- `~/.lazyrecall/index.db` — lazyrecall's SQLite cache (session metadata + Haiku-generated summaries). Safe to delete; regenerates on next run.
-- `~/.lazyrecall/api-key` — optional fallback API key file (one line).
+PRs welcome. See [CONTRIBUTING.md](CONTRIBUTING.md). The architecture is small enough to read in a sitting — start with [ARCHITECTURE.md](ARCHITECTURE.md) and `crates/lazyrecall-core/src/lib.rs`.
 
 ## License
 
-MIT OR Apache-2.0
+Dual-licensed under either of:
+
+- MIT license ([LICENSE-MIT](LICENSE-MIT))
+- Apache License 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+
+at your option.

@@ -1,15 +1,23 @@
 [package]
 name = "lazyrecall-tui"
+description = "Lazygit-style TUI for browsing, searching, and resuming Claude Code sessions"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
 
 [[bin]]
 name = "lazyrecall"
 path = "src/main.rs"
 
 [dependencies]
-lazyrecall-core = { path = "../lazyrecall-core" }
+lazyrecall-core = { path = "../lazyrecall-core", version = "0.1.0" }
 anyhow.workspace = true
 tokio.workspace = true
 ratatui = "0.28"
