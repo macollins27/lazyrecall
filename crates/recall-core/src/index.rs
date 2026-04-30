@@ -1,0 +1,112 @@
+//! Persistent index over discovered sessions, stored at `~/.recall/index.db`.
+//!
+//! Schema is versioned from day 1 so V2+ migrations don't paint us into a corner.
+
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result};
+use rusqlite::{params, Connection};
+
+use crate::parser::SessionMetadata;
+
+pub struct Index {
+    conn: Connection,
+}
+
+const SCHEMA_VERSION: i32 = 1;
+
+const SCHEMA_V1: &str = r#"
+CREATE TABLE IF NOT EXISTS schema_version (
+    version INTEGER PRIMARY KEY
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    id TEXT PRIMARY KEY,
+    project TEXT NOT NULL,
+    path TEXT NOT NULL,
+    mtime INTEGER NOT NULL,
+    message_count INTEGER NOT NULL,
+    last_message_preview TEXT NOT NULL DEFAULT '',
+    summary TEXT,
+    summary_generated_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project);
+CREATE INDEX IF NOT EXISTS idx_sessions_mtime ON sessions(mtime DESC);
+"#;
+
+impl Index {
+    pub fn data_dir() -> Result<PathBuf> {
+        let home = std::env::var("HOME").context("HOME env var not set")?;
+        Ok(PathBuf::from(home).join(".recall"))
+    }
+
+    pub fn default_path() -> Result<PathBuf> {
+        Ok(Self::data_dir()?.join("index.db"))
+    }
+
+    pub fn open(path: &Path) -> Result<Self> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let conn = Connection::open(path)?;
+        let index = Self { conn };
+        index.migrate()?;
+        Ok(index)
+    }
+
+    fn migrate(&self) -> Result<()> {
+        self.conn.execute_batch(SCHEMA_V1)?;
+        let current: Option<i32> = self
+            .conn
+            .query_row("SELECT version FROM schema_version LIMIT 1", [], |r| r.get(0))
+            .ok();
+        if current.is_none() {
+            self.conn.execute(
+                "INSERT INTO schema_version (version) VALUES (?1)",
+                params![SCHEMA_VERSION],
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn upsert_session(&self, project: &str, path: &Path, meta: &SessionMetadata) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO sessions (id, project, path, mtime, message_count, last_message_preview)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(id) DO UPDATE SET
+                project = excluded.project,
+                path = excluded.path,
+                mtime = excluded.mtime,
+                message_count = excluded.message_count,
+                last_message_preview = excluded.last_message_preview",
+            params![
+                meta.id,
+                project,
+                path.to_string_lossy(),
+                meta.last_modified_unix,
+                meta.message_count as i64,
+                meta.last_message_preview,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_summary(&self, session_id: &str, summary: &str, generated_at_unix: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE sessions SET summary = ?1, summary_generated_at = ?2 WHERE id = ?3",
+            params![summary, generated_at_unix, session_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn missing_summaries(&self) -> Result<Vec<(String, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, path FROM sessions WHERE summary IS NULL ORDER BY mtime DESC",
+        )?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+}

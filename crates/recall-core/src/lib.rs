@@ -1,0 +1,11 @@
+//! recall-core: discovery, parsing, indexing, and summarization of Claude Code session transcripts.
+
+pub mod discovery;
+pub mod index;
+pub mod parser;
+pub mod summarizer;
+
+pub use discovery::Project;
+pub use index::Index;
+pub use parser::{Session, SessionMetadata};
+pub use summarizer::Summarizer;
