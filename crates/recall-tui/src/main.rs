@@ -18,7 +18,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
-use recall_core::{discovery, parser, EventKind, Index, Project};
+use recall_core::{discovery, parser, summarizer_worker, EventKind, Index, Project, Summarizer};
 use recall_core::Event as SessionEvent;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,10 +78,19 @@ impl App {
             self.session_state.select(Some(0));
         }
         self.last_loaded_project_idx = Some(idx);
-        self.summary_cache = self
-            .index
-            .project_summaries(&project.encoded_cwd)
-            .unwrap_or_default();
+        self.refresh_summary_cache();
+    }
+
+    fn refresh_summary_cache(&mut self) {
+        let Some(idx) = self.last_loaded_project_idx else {
+            return;
+        };
+        let Some(project) = self.projects.get(idx) else {
+            return;
+        };
+        if let Ok(summaries) = self.index.project_summaries(&project.encoded_cwd) {
+            self.summary_cache = summaries;
+        }
     }
 
     fn current_session(&self) -> Option<&PathBuf> {
@@ -171,7 +180,34 @@ fn mtime(path: &PathBuf) -> Option<SystemTime> {
 }
 
 fn main() -> Result<()> {
-    let index = Index::open(&Index::default_path()?)?;
+    let index_path = Index::default_path()?;
+    let index = Index::open(&index_path)?;
+
+    if let Ok(api_key) = std::env::var("ANTHROPIC_API_KEY") {
+        let worker_index_path = index_path.clone();
+        std::thread::spawn(move || {
+            let worker_index = match Index::open(&worker_index_path) {
+                Ok(idx) => idx,
+                Err(e) => {
+                    eprintln!("recall: summarizer worker could not open index: {}", e);
+                    return;
+                }
+            };
+            let summarizer = Summarizer::new(api_key);
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    eprintln!("recall: summarizer worker tokio init failed: {}", e);
+                    return;
+                }
+            };
+            let _ = rt.block_on(summarizer_worker::run(worker_index, summarizer));
+        });
+    }
+
     let projects = discovery::list_projects().unwrap_or_default();
     let mut app = App::new(projects, index);
     app.refresh_sessions();
@@ -208,6 +244,8 @@ fn main() -> Result<()> {
 }
 
 fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
+    let mut ticks_since_refresh: u32 = 0;
+    const TICKS_PER_REFRESH: u32 = 25; // ~5s at 200ms poll
     loop {
         terminal.draw(|f| draw(f, app))?;
 
@@ -234,6 +272,12 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
                     _ => {}
                 }
             }
+        }
+
+        ticks_since_refresh += 1;
+        if ticks_since_refresh >= TICKS_PER_REFRESH {
+            ticks_since_refresh = 0;
+            app.refresh_summary_cache();
         }
     }
 }
@@ -279,7 +323,7 @@ fn draw_sessions(f: &mut Frame, area: Rect, app: &mut App) {
             let id = p.file_stem().and_then(|s| s.to_str()).unwrap_or("?");
             let short = id.split('-').next().unwrap_or(id);
             let body = match app.summary_cache.get(id) {
-                Some(s) => oneline(s),
+                Some(s) => truncate_display(&oneline(s), 60),
                 None => mtime(p)
                     .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
                     .map(|d| format_relative(d.as_secs() as i64))
@@ -369,6 +413,17 @@ fn label_style_for(kind: &EventKind) -> Style {
 
 fn oneline(s: impl AsRef<str>) -> String {
     s.as_ref().replace('\n', " ").replace('\r', " ")
+}
+
+fn truncate_display(s: &str, max: usize) -> String {
+    let count = s.chars().count();
+    if count <= max {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(max.saturating_sub(3)).collect();
+        out.push_str("...");
+        out
+    }
 }
 
 fn border(title: &str, focused: bool) -> Block<'_> {
