@@ -40,7 +40,7 @@ struct App {
     recent_cache: HashMap<PathBuf, Vec<SessionEvent>>,
     summary_cache: HashMap<String, String>,
     focus: Pane,
-    resume_request: Option<String>,
+    resume_request: Option<(String, Option<String>)>,
     last_loaded_project_idx: Option<usize>,
     index: Index,
     stats: IndexStats,
@@ -178,9 +178,20 @@ impl App {
             .current_session()
             .and_then(|p| p.file_stem().and_then(|s| s.to_str()))
             .map(|s| s.to_string());
-        if let Some(stem) = stem {
-            self.resume_request = Some(stem);
-        }
+        let Some(stem) = stem else { return };
+        // claude --resume scopes lookup to the cwd it runs in. Capture the
+        // session's recorded cwd so main() can chdir before exec — otherwise
+        // claude searches the wrong project dir and reports "transcript does
+        // not exist".
+        let metadata_cwd = self
+            .current_session_metadata()
+            .and_then(|m| m.cwd.clone());
+        let cwd = metadata_cwd.or_else(|| {
+            self.last_loaded_project_idx
+                .and_then(|i| self.projects.get(i))
+                .and_then(|p| p.real_cwd.clone())
+        });
+        self.resume_request = Some((stem, cwd));
     }
 }
 
@@ -312,12 +323,14 @@ fn main() -> Result<()> {
 
     res?;
 
-    if let Some(session_id) = app.resume_request {
+    if let Some((session_id, cwd)) = app.resume_request {
         use std::os::unix::process::CommandExt;
-        let err = Command::new("claude")
-            .arg("--resume")
-            .arg(&session_id)
-            .exec();
+        let mut cmd = Command::new("claude");
+        cmd.arg("--resume").arg(&session_id);
+        if let Some(cwd) = cwd {
+            cmd.current_dir(cwd);
+        }
+        let err = cmd.exec();
         eprintln!("recall: failed to exec claude: {}", err);
         std::process::exit(1);
     }
