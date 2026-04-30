@@ -2,6 +2,7 @@
 //!
 //! Schema is versioned from day 1 so V2+ migrations don't paint us into a corner.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -98,6 +99,23 @@ impl Index {
             params![summary, generated_at_unix, session_id],
         )?;
         Ok(())
+    }
+
+    /// All non-null summaries for sessions in a given project, keyed by session id.
+    /// Used by the TUI to render summary text inline in the sessions list.
+    pub fn project_summaries(&self, project: &str) -> Result<HashMap<String, String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, summary FROM sessions WHERE project = ?1 AND summary IS NOT NULL",
+        )?;
+        let rows = stmt.query_map(params![project], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        let mut out = HashMap::new();
+        for row in rows {
+            let (id, summary) = row?;
+            out.insert(id, summary);
+        }
+        Ok(out)
     }
 
     pub fn missing_summaries(&self) -> Result<Vec<(String, String)>> {

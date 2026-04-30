@@ -18,7 +18,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
-use recall_core::{discovery, parser, EventKind, Project};
+use recall_core::{discovery, parser, EventKind, Index, Project};
 use recall_core::Event as SessionEvent;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,13 +35,15 @@ struct App {
     session_state: ListState,
     metadata_cache: HashMap<PathBuf, parser::SessionMetadata>,
     recent_cache: HashMap<PathBuf, Vec<SessionEvent>>,
+    summary_cache: HashMap<String, String>,
     focus: Pane,
     resume_request: Option<String>,
     last_loaded_project_idx: Option<usize>,
+    index: Index,
 }
 
 impl App {
-    fn new(projects: Vec<Project>) -> Self {
+    fn new(projects: Vec<Project>, index: Index) -> Self {
         let mut project_state = ListState::default();
         if !projects.is_empty() {
             project_state.select(Some(0));
@@ -53,9 +55,11 @@ impl App {
             session_state: ListState::default(),
             metadata_cache: HashMap::new(),
             recent_cache: HashMap::new(),
+            summary_cache: HashMap::new(),
             focus: Pane::Projects,
             resume_request: None,
             last_loaded_project_idx: None,
+            index,
         }
     }
 
@@ -68,14 +72,16 @@ impl App {
         }
         let project = self.projects[idx].clone();
         self.sessions = discovery::list_sessions(&project).unwrap_or_default();
-        self.sessions.sort_by(|a, b| {
-            mtime(b).cmp(&mtime(a))
-        });
+        self.sessions.sort_by(|a, b| mtime(b).cmp(&mtime(a)));
         self.session_state = ListState::default();
         if !self.sessions.is_empty() {
             self.session_state.select(Some(0));
         }
         self.last_loaded_project_idx = Some(idx);
+        self.summary_cache = self
+            .index
+            .project_summaries(&project.encoded_cwd)
+            .unwrap_or_default();
     }
 
     fn current_session(&self) -> Option<&PathBuf> {
@@ -88,6 +94,12 @@ impl App {
         let path = self.current_session()?.clone();
         if !self.metadata_cache.contains_key(&path) {
             if let Ok(meta) = parser::parse_metadata(&path) {
+                let project_key = self
+                    .last_loaded_project_idx
+                    .and_then(|i| self.projects.get(i))
+                    .map(|p| p.encoded_cwd.clone())
+                    .unwrap_or_default();
+                let _ = self.index.upsert_session(&project_key, &path, &meta);
                 self.metadata_cache.insert(path.clone(), meta);
             }
         }
@@ -159,8 +171,9 @@ fn mtime(path: &PathBuf) -> Option<SystemTime> {
 }
 
 fn main() -> Result<()> {
+    let index = Index::open(&Index::default_path()?)?;
     let projects = discovery::list_projects().unwrap_or_default();
-    let mut app = App::new(projects);
+    let mut app = App::new(projects, index);
     app.refresh_sessions();
 
     enable_raw_mode()?;
@@ -265,11 +278,14 @@ fn draw_sessions(f: &mut Frame, area: Rect, app: &mut App) {
         .map(|p| {
             let id = p.file_stem().and_then(|s| s.to_str()).unwrap_or("?");
             let short = id.split('-').next().unwrap_or(id);
-            let when = mtime(p)
-                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                .map(|d| format_relative(d.as_secs() as i64))
-                .unwrap_or_else(|| "?".to_string());
-            ListItem::new(format!("{:<8}  {}", short, when))
+            let body = match app.summary_cache.get(id) {
+                Some(s) => oneline(s),
+                None => mtime(p)
+                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                    .map(|d| format_relative(d.as_secs() as i64))
+                    .unwrap_or_else(|| "?".to_string()),
+            };
+            ListItem::new(format!("{:<8}  {}", short, body))
         })
         .collect();
     let list = List::new(items)
