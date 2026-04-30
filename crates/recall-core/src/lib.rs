@@ -7,5 +7,5 @@ pub mod summarizer;
 
 pub use discovery::Project;
 pub use index::Index;
-pub use parser::{Session, SessionMetadata};
+pub use parser::{Event, EventKind, SessionMetadata};
 pub use summarizer::Summarizer;

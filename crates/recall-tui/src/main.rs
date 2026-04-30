@@ -15,10 +15,11 @@ use crossterm::terminal::{
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::text::Span;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
-use recall_core::{discovery, parser, Project};
+use recall_core::{discovery, parser, EventKind, Project};
+use recall_core::Event as SessionEvent;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Pane {
@@ -33,6 +34,7 @@ struct App {
     sessions: Vec<PathBuf>,
     session_state: ListState,
     metadata_cache: HashMap<PathBuf, parser::SessionMetadata>,
+    recent_cache: HashMap<PathBuf, Vec<SessionEvent>>,
     focus: Pane,
     resume_request: Option<String>,
     last_loaded_project_idx: Option<usize>,
@@ -50,6 +52,7 @@ impl App {
             sessions: Vec::new(),
             session_state: ListState::default(),
             metadata_cache: HashMap::new(),
+            recent_cache: HashMap::new(),
             focus: Pane::Projects,
             resume_request: None,
             last_loaded_project_idx: None,
@@ -89,6 +92,15 @@ impl App {
             }
         }
         self.metadata_cache.get(&path)
+    }
+
+    fn current_recent_events(&mut self) -> Option<&Vec<SessionEvent>> {
+        let path = self.current_session()?.clone();
+        if !self.recent_cache.contains_key(&path) {
+            let events = parser::parse_recent(&path, 6).unwrap_or_default();
+            self.recent_cache.insert(path.clone(), events);
+        }
+        self.recent_cache.get(&path)
     }
 
     fn move_down(&mut self) {
@@ -267,24 +279,80 @@ fn draw_sessions(f: &mut Frame, area: Rect, app: &mut App) {
 }
 
 fn draw_preview(f: &mut Frame, area: Rect, app: &mut App) {
-    let body = match app.current_session_metadata() {
-        Some(meta) => format!(
-            "id:        {}\nmessages:  {}\nmtime:     {}\n\n--- last message ---\n\n{}",
-            meta.id,
-            meta.message_count,
-            format_relative(meta.last_modified_unix),
-            if meta.last_message_preview.is_empty() {
-                "(no preview available)"
-            } else {
-                &meta.last_message_preview
-            }
-        ),
-        None => "(no session selected)\n\nq: quit  j/k: nav  tab: focus  enter: resume".to_string(),
-    };
-    let p = Paragraph::new(body)
+    let meta = app.current_session_metadata().cloned();
+    let recent = app.current_recent_events().cloned();
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    if let Some(meta) = &meta {
+        lines.push(Line::from(format!("id:       {}", meta.id)));
+        if let Some(cwd) = &meta.cwd {
+            lines.push(Line::from(format!("cwd:      {}", cwd)));
+        }
+        lines.push(Line::from(format!("messages: {}", meta.message_count)));
+        lines.push(Line::from(format!(
+            "mtime:    {}",
+            format_relative(meta.last_modified_unix)
+        )));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "── recent ──",
+            Style::default().add_modifier(Modifier::DIM),
+        )));
+        lines.push(Line::from(""));
+    }
+
+    if let Some(events) = &recent {
+        for ev in events {
+            let (label, body) = format_event(ev);
+            let label_style = label_style_for(&ev.kind);
+            lines.push(Line::from(vec![
+                Span::styled(label, label_style),
+                Span::raw(body),
+            ]));
+            lines.push(Line::from(""));
+        }
+    }
+
+    if lines.is_empty() {
+        lines.push(Line::from("(no session selected)"));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "q: quit   j/k: nav   tab: focus   enter: resume",
+            Style::default().add_modifier(Modifier::DIM),
+        )));
+    }
+
+    let p = Paragraph::new(lines)
         .wrap(Wrap { trim: false })
         .block(border(" preview ", app.focus == Pane::Preview));
     f.render_widget(p, area);
+}
+
+fn format_event(ev: &SessionEvent) -> (&'static str, String) {
+    match &ev.kind {
+        EventKind::UserText(t) => ("[user]   ", oneline(t)),
+        EventKind::UserToolResult { content, .. } => ("[result] ", oneline(content)),
+        EventKind::AssistantText(t) => ("[claude] ", oneline(t)),
+        EventKind::AssistantToolUse { name, input } => {
+            ("[tool]   ", format!("{}({})", name, oneline(input)))
+        }
+        EventKind::System(t) => ("[system] ", oneline(t)),
+    }
+}
+
+fn label_style_for(kind: &EventKind) -> Style {
+    let base = Style::default().add_modifier(Modifier::BOLD);
+    match kind {
+        EventKind::UserText(_) | EventKind::UserToolResult { .. } => base,
+        EventKind::AssistantText(_) => base,
+        EventKind::AssistantToolUse { .. } => base.add_modifier(Modifier::DIM),
+        EventKind::System(_) => base.add_modifier(Modifier::DIM),
+    }
+}
+
+fn oneline(s: impl AsRef<str>) -> String {
+    s.as_ref().replace('\n', " ").replace('\r', " ")
 }
 
 fn border(title: &str, focused: bool) -> Block<'_> {

@@ -86,7 +86,7 @@ impl Index {
                 path.to_string_lossy(),
                 meta.last_modified_unix,
                 meta.message_count as i64,
-                meta.last_message_preview,
+                meta.last_text_preview,
             ],
         )?;
         Ok(())
