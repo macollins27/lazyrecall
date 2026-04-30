@@ -176,6 +176,29 @@ impl App {
     }
 }
 
+/// Load the Anthropic API key. Prefers ANTHROPIC_API_KEY in the environment;
+/// falls back to a key stored at ~/.recall/api-key (one line, mode 0600 recommended).
+/// The file-based path keeps the secret out of shell history and shell config.
+fn load_api_key() -> Option<String> {
+    if let Ok(k) = std::env::var("ANTHROPIC_API_KEY") {
+        let trimmed = k.trim().to_string();
+        if !trimmed.is_empty() {
+            return Some(trimmed);
+        }
+    }
+    let home = std::env::var("HOME").ok()?;
+    let path = std::path::PathBuf::from(home)
+        .join(".recall")
+        .join("api-key");
+    let content = std::fs::read_to_string(&path).ok()?;
+    let trimmed = content.trim().to_string();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
 fn seed_index(index: &Index, projects: &[Project]) {
     for project in projects {
         let Ok(sessions) = discovery::list_sessions(project) else {
@@ -233,7 +256,7 @@ fn main() -> Result<()> {
         });
     }
 
-    let api_key = std::env::var("ANTHROPIC_API_KEY").ok();
+    let api_key = load_api_key();
     let api_key_set = api_key.is_some();
     if let Some(api_key) = api_key {
         let worker_index_path = index_path.clone();
