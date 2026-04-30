@@ -165,6 +165,14 @@ impl App {
         };
     }
 
+    fn cycle_focus_back(&mut self) {
+        self.focus = match self.focus {
+            Pane::Projects => Pane::Preview,
+            Pane::Sessions => Pane::Projects,
+            Pane::Preview => Pane::Sessions,
+        };
+    }
+
     fn request_resume(&mut self) {
         let stem = self
             .current_session()
@@ -332,7 +340,10 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
                     KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
                     KeyCode::Char('j') | KeyCode::Down => app.move_down(),
                     KeyCode::Char('k') | KeyCode::Up => app.move_up(),
-                    KeyCode::Tab => app.cycle_focus(),
+                    KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => app.cycle_focus(),
+                    KeyCode::BackTab | KeyCode::Left | KeyCode::Char('h') => {
+                        app.cycle_focus_back()
+                    }
                     KeyCode::Enter => match app.focus {
                         Pane::Projects => app.focus = Pane::Sessions,
                         Pane::Sessions => {
@@ -395,10 +406,25 @@ fn draw_status(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_projects(f: &mut Frame, area: Rect, app: &mut App) {
+    let dim = Style::default().add_modifier(Modifier::DIM);
     let items: Vec<ListItem> = app
         .projects
         .iter()
-        .map(|p| ListItem::new(format!("{} ({})", display_project(p), p.session_count)))
+        .map(|p| {
+            let name = display_project(p);
+            let count = format!("({})", p.session_count);
+            let when = p
+                .latest_mtime_unix
+                .map(format_relative)
+                .unwrap_or_default();
+            ListItem::new(Line::from(vec![
+                Span::raw(name),
+                Span::raw(" "),
+                Span::styled(count, dim),
+                Span::raw("  "),
+                Span::styled(when, dim),
+            ]))
+        })
         .collect();
     let list = List::new(items)
         .block(border(" projects ", app.focus == Pane::Projects))
