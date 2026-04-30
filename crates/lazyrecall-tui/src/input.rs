@@ -32,12 +32,12 @@ pub fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result
                         KeyCode::PageUp => app.page_up(),
                         KeyCode::Char('g') => {
                             if matches!(app.focus, Pane::Preview) {
-                                app.preview_scroll = 0;
+                                app.scroll_preview_to_start();
                             }
                         }
                         KeyCode::Char('G') => {
                             if matches!(app.focus, Pane::Preview) {
-                                app.preview_scroll = u16::MAX;
+                                app.scroll_preview_to_end();
                             }
                         }
                         KeyCode::Char('1') => app.set_focus(Pane::Projects),
@@ -60,11 +60,19 @@ pub fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result
                         _ => {}
                     }
                 }
-                Event::Mouse(mouse) => match mouse.kind {
-                    MouseEventKind::ScrollDown => app.move_down(),
-                    MouseEventKind::ScrollUp => app.move_up(),
-                    _ => {}
-                },
+                Event::Mouse(mouse) => {
+                    // Mouse wheel only scrolls the preview pane. On lists,
+                    // wheel events would otherwise change the selected row,
+                    // which the user finds disorienting — j/k stays the way
+                    // to navigate lists.
+                    if matches!(app.focus, Pane::Preview) {
+                        match mouse.kind {
+                            MouseEventKind::ScrollDown => app.scroll_preview_by(3),
+                            MouseEventKind::ScrollUp => app.scroll_preview_by(-3),
+                            _ => {}
+                        }
+                    }
+                }
                 _ => {}
             }
         }

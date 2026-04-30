@@ -30,6 +30,7 @@ pub struct App {
     pub resume_request: Option<(String, Option<String>)>,
     pub last_loaded_project_idx: Option<usize>,
     pub preview_scroll: u16,
+    pub preview_total_lines: u16,
     pub last_preview_session: Option<PathBuf>,
     pub index: Index,
     pub stats: IndexStats,
@@ -55,6 +56,7 @@ impl App {
             resume_request: None,
             last_loaded_project_idx: None,
             preview_scroll: 0,
+            preview_total_lines: 0,
             last_preview_session: None,
             index,
             stats,
@@ -138,9 +140,7 @@ impl App {
                 self.refresh_sessions();
             }
             Pane::Sessions => move_state(&mut self.session_state, self.sessions.len(), 1),
-            Pane::Preview => {
-                self.preview_scroll = self.preview_scroll.saturating_add(1);
-            }
+            Pane::Preview => self.scroll_preview_by(1),
         }
     }
 
@@ -151,17 +151,13 @@ impl App {
                 self.refresh_sessions();
             }
             Pane::Sessions => move_state(&mut self.session_state, self.sessions.len(), -1),
-            Pane::Preview => {
-                self.preview_scroll = self.preview_scroll.saturating_sub(1);
-            }
+            Pane::Preview => self.scroll_preview_by(-1),
         }
     }
 
     pub fn page_down(&mut self) {
         match self.focus {
-            Pane::Preview => {
-                self.preview_scroll = self.preview_scroll.saturating_add(10);
-            }
+            Pane::Preview => self.scroll_preview_by(10),
             _ => {
                 for _ in 0..10 {
                     self.move_down();
@@ -172,15 +168,28 @@ impl App {
 
     pub fn page_up(&mut self) {
         match self.focus {
-            Pane::Preview => {
-                self.preview_scroll = self.preview_scroll.saturating_sub(10);
-            }
+            Pane::Preview => self.scroll_preview_by(-10),
             _ => {
                 for _ in 0..10 {
                     self.move_up();
                 }
             }
         }
+    }
+
+    pub fn scroll_preview_by(&mut self, delta: i32) {
+        let max = self.preview_total_lines.saturating_sub(1);
+        let cur = self.preview_scroll as i32;
+        let new = (cur + delta).clamp(0, max as i32);
+        self.preview_scroll = new as u16;
+    }
+
+    pub fn scroll_preview_to_end(&mut self) {
+        self.preview_scroll = self.preview_total_lines.saturating_sub(1);
+    }
+
+    pub fn scroll_preview_to_start(&mut self) {
+        self.preview_scroll = 0;
     }
 
     pub fn cycle_focus(&mut self) {

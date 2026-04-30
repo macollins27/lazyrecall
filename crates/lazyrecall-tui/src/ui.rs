@@ -204,10 +204,16 @@ fn draw_preview(f: &mut Frame, area: Rect, app: &mut App) {
     }
 
     let total_lines = lines.len();
+    app.preview_total_lines = total_lines as u16;
+
+    // Manual scroll via slicing rather than `Paragraph::scroll((y, x))` —
+    // the latter combined with `Wrap { trim: false }` overruns the pane's
+    // buffer in ratatui 0.28, causing wrapped text to bleed into adjacent
+    // panes (e.g. preview text appearing as a prefix in the projects list).
+    let visible: Vec<Line> = lines.into_iter().skip(scroll as usize).collect();
     let block = pane_block_simple("preview", 3, app.focus == Pane::Preview);
-    let p = Paragraph::new(lines)
+    let p = Paragraph::new(visible)
         .wrap(Wrap { trim: false })
-        .scroll((scroll, 0))
         .block(block);
     f.render_widget(p, area);
 
