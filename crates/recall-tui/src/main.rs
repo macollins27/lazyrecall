@@ -18,7 +18,9 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
-use recall_core::{discovery, parser, summarizer_worker, EventKind, Index, Project, Summarizer};
+use recall_core::{
+    discovery, parser, summarizer_worker, EventKind, Index, IndexStats, Project, Summarizer,
+};
 use recall_core::Event as SessionEvent;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,14 +42,17 @@ struct App {
     resume_request: Option<String>,
     last_loaded_project_idx: Option<usize>,
     index: Index,
+    stats: IndexStats,
+    api_key_set: bool,
 }
 
 impl App {
-    fn new(projects: Vec<Project>, index: Index) -> Self {
+    fn new(projects: Vec<Project>, index: Index, api_key_set: bool) -> Self {
         let mut project_state = ListState::default();
         if !projects.is_empty() {
             project_state.select(Some(0));
         }
+        let stats = index.stats().unwrap_or_default();
         Self {
             projects,
             project_state,
@@ -60,6 +65,8 @@ impl App {
             resume_request: None,
             last_loaded_project_idx: None,
             index,
+            stats,
+            api_key_set,
         }
     }
 
@@ -78,10 +85,13 @@ impl App {
             self.session_state.select(Some(0));
         }
         self.last_loaded_project_idx = Some(idx);
-        self.refresh_summary_cache();
+        self.refresh_index_state();
     }
 
-    fn refresh_summary_cache(&mut self) {
+    fn refresh_index_state(&mut self) {
+        if let Ok(stats) = self.index.stats() {
+            self.stats = stats;
+        }
         let Some(idx) = self.last_loaded_project_idx else {
             return;
         };
@@ -165,6 +175,26 @@ impl App {
     }
 }
 
+fn seed_index(index: &Index, projects: &[Project]) {
+    for project in projects {
+        let Ok(sessions) = discovery::list_sessions(project) else {
+            continue;
+        };
+        for path in sessions {
+            let Some(id) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            let mtime_unix = std::fs::metadata(&path)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            let _ = index.touch_session(&project.encoded_cwd, id, &path, mtime_unix);
+        }
+    }
+}
+
 fn move_state(state: &mut ListState, len: usize, delta: i32) {
     if len == 0 {
         state.select(None);
@@ -183,7 +213,12 @@ fn main() -> Result<()> {
     let index_path = Index::default_path()?;
     let index = Index::open(&index_path)?;
 
-    if let Ok(api_key) = std::env::var("ANTHROPIC_API_KEY") {
+    let projects = discovery::list_projects().unwrap_or_default();
+    seed_index(&index, &projects);
+
+    let api_key = std::env::var("ANTHROPIC_API_KEY").ok();
+    let api_key_set = api_key.is_some();
+    if let Some(api_key) = api_key {
         let worker_index_path = index_path.clone();
         std::thread::spawn(move || {
             let worker_index = match Index::open(&worker_index_path) {
@@ -208,8 +243,7 @@ fn main() -> Result<()> {
         });
     }
 
-    let projects = discovery::list_projects().unwrap_or_default();
-    let mut app = App::new(projects, index);
+    let mut app = App::new(projects, index, api_key_set);
     app.refresh_sessions();
 
     enable_raw_mode()?;
@@ -277,24 +311,47 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
         ticks_since_refresh += 1;
         if ticks_since_refresh >= TICKS_PER_REFRESH {
             ticks_since_refresh = 0;
-            app.refresh_summary_cache();
+            app.refresh_index_state();
         }
     }
 }
 
 fn draw(f: &mut Frame, app: &mut App) {
-    let chunks = Layout::default()
+    let outer = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(1)])
+        .split(f.area());
+
+    let panes = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Percentage(25),
             Constraint::Percentage(35),
             Constraint::Percentage(40),
         ])
-        .split(f.area());
+        .split(outer[0]);
 
-    draw_projects(f, chunks[0], app);
-    draw_sessions(f, chunks[1], app);
-    draw_preview(f, chunks[2], app);
+    draw_projects(f, panes[0], app);
+    draw_sessions(f, panes[1], app);
+    draw_preview(f, panes[2], app);
+    draw_status(f, outer[1], app);
+}
+
+fn draw_status(f: &mut Frame, area: Rect, app: &App) {
+    let pending = app.stats.total.saturating_sub(app.stats.summarized);
+    let summarizer_label = if !app.api_key_set {
+        "no ANTHROPIC_API_KEY"
+    } else if pending == 0 {
+        "summarizer idle"
+    } else {
+        "summarizer working"
+    };
+    let body = format!(
+        " {} sessions · {} summarized · {} pending · {}",
+        app.stats.total, app.stats.summarized, pending, summarizer_label
+    );
+    let p = Paragraph::new(body).style(Style::default().add_modifier(Modifier::DIM));
+    f.render_widget(p, area);
 }
 
 fn draw_projects(f: &mut Frame, area: Rect, app: &mut App) {

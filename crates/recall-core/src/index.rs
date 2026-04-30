@@ -14,6 +14,12 @@ pub struct Index {
     conn: Connection,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct IndexStats {
+    pub total: usize,
+    pub summarized: usize,
+}
+
 const SCHEMA_VERSION: i32 = 1;
 
 const SCHEMA_V1: &str = r#"
@@ -69,6 +75,33 @@ impl Index {
             )?;
         }
         Ok(())
+    }
+
+    /// Insert a row for a session if it doesn't already exist. No-op if it does.
+    /// Used by the startup scan to seed the work list for the summarizer without
+    /// reading or parsing every JSONL file (which is slow for large transcripts).
+    pub fn touch_session(&self, project: &str, id: &str, path: &Path, mtime: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO sessions (id, project, path, mtime, message_count)
+             VALUES (?1, ?2, ?3, ?4, 0)",
+            params![id, project, path.to_string_lossy(), mtime],
+        )?;
+        Ok(())
+    }
+
+    pub fn stats(&self) -> Result<IndexStats> {
+        let total: i64 =
+            self.conn
+                .query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0))?;
+        let summarized: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM sessions WHERE summary IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )?;
+        Ok(IndexStats {
+            total: total as usize,
+            summarized: summarized as usize,
+        })
     }
 
     pub fn upsert_session(&self, project: &str, path: &Path, meta: &SessionMetadata) -> Result<()> {
